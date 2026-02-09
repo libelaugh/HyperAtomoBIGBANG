@@ -1,41 +1,39 @@
 /*==============================================================================
 
-　　　フィールド用シェーダー[shader_field.cpp]
-														 Author : Kouki Tanaka
-														 Date   : 2025/09/26
+   シェーダー2D用　[shader2d.h]
+														 Author : Youhei Sato
+														 Date   : 2025/09/19
 --------------------------------------------------------------------------------
 
 ==============================================================================*/
 
-#include "shader_field.h"
+#include "shader2d.h"
+#include <d3d11.h>
+#include <DirectXMath.h>
 #include "debug_ostream.h"
 #include <fstream>
 #include"direct3d.h"
 #include"sampler.h"
-
 using namespace DirectX;
+
 
 static ID3D11VertexShader* g_pVertexShader = nullptr;
 static ID3D11InputLayout* g_pInputLayout = nullptr;
 static ID3D11Buffer* g_pVSConstantBuffer0 = nullptr;//定数バッファｂ０
+static ID3D11Buffer* g_pVSConstantBuffer1 = nullptr;//定数バッファｂ１
 static ID3D11PixelShader* g_pPixelShader = nullptr;
 
 // 注意！初期化で外部から設定されるもの。Release不要。
 static ID3D11Device* g_pDevice = nullptr;
 static ID3D11DeviceContext* g_pContext = nullptr;
 
-struct VSConst0 { DirectX::XMFLOAT4X4 view; DirectX::XMFLOAT4X4 proj; };
-static VSConst0 g_vs0{};
-
-
-
-bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext)
+bool Shader2D_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext)
 {
 	HRESULT hr; // 戻り値格納用
 
 	// デバイスとデバイスコンテキストがあるかチェック
 	if (!pDevice || !pContext) {
-		hal::dout << "Shader3D_Initialize() : 与えられたデバイスかコンテキストが不正です" << std::endl;
+		hal::dout << "Shader_Initialize() : 与えられたデバイスかコンテキストが不正です" << std::endl;
 		return false;
 	}
 
@@ -45,10 +43,10 @@ bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext
 
 
 	// 事前コンパイル済み頂点シェーダーの読み込み
-	std::ifstream ifs_vs("shader_vertex_field.cso", std::ios::binary);
+	std::ifstream ifs_vs("shader_vertex_2d.cso", std::ios::binary);
 
 	if (!ifs_vs) {
-		MessageBox(nullptr, TEXT("頂点シェーダーの読み込みに失敗しました\n\nshader_vertex_field.cso"), TEXT("エラー"), MB_OK);
+		MessageBox(nullptr, TEXT("頂点シェーダーの読み込みに失敗しました\n\nshader_vertex_2d.cso"), TEXT("エラー"), MB_OK);
 		return false;
 	}
 
@@ -63,21 +61,11 @@ bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext
 	ifs_vs.read((char*)vsbinary_pointer, filesize); // バイナリデータを読み込む
 	ifs_vs.close(); // ファイルを閉じる
 
-
-	// 作成部（Initialize 内）
-	D3D11_BUFFER_DESC bd{};
-	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-	bd.ByteWidth = sizeof(DirectX::XMFLOAT4X4);
-	g_pDevice->CreateBuffer(&bd, nullptr, &g_pVSConstantBuffer0); // b0: world
-
-	// Begin() でバインド
-	g_pContext->VSSetConstantBuffers(0, 1, &g_pVSConstantBuffer0); // world -> b0
-
 	// 頂点シェーダーの作成
 	hr = g_pDevice->CreateVertexShader(vsbinary_pointer, filesize, nullptr, &g_pVertexShader);
 
 	if (FAILED(hr)) {
-		hal::dout << "Shader3D_Initialize() : 頂点シェーダーの作成に失敗しました" << std::endl;
+		hal::dout << "Shader_Initialize() : 頂点シェーダーの作成に失敗しました" << std::endl;
 		delete[] vsbinary_pointer; // メモリリークしないようにバイナリデータのバッファを解放
 		return false;
 	}
@@ -86,7 +74,6 @@ bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext
 	// 頂点レイアウトの定義
 	D3D11_INPUT_ELEMENT_DESC layout[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,    0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	};
@@ -99,22 +86,24 @@ bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext
 	delete[] vsbinary_pointer; // バイナリデータのバッファを解放
 
 	if (FAILED(hr)) {
-		hal::dout << "Shader3D_Initialize() : 頂点レイアウトの作成に失敗しました" << std::endl;
+		hal::dout << "Shader_Initialize() : 頂点レイアウトの作成に失敗しました" << std::endl;
 		return false;
 	}
+
+
 	// 頂点シェーダー用定数バッファの作成
-	/*D3D11_BUFFER_DESC buffer_desc{};
+	D3D11_BUFFER_DESC buffer_desc{};
 	buffer_desc.ByteWidth = sizeof(XMFLOAT4X4); // バッファのサイズ
 	buffer_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER; // バインドフラグ
 
 	g_pDevice->CreateBuffer(&buffer_desc, nullptr, &g_pVSConstantBuffer0);
-	g_pDevice->CreateBuffer(&buffer_desc, nullptr, &g_pVSConstantBuffer1);*/
+	g_pDevice->CreateBuffer(&buffer_desc, nullptr, &g_pVSConstantBuffer1);
 
 
 	// 事前コンパイル済みピクセルシェーダーの読み込み
-	std::ifstream ifs_ps("shader_pixel_field.cso", std::ios::binary);
+	std::ifstream ifs_ps("shader_pixel_2d.cso", std::ios::binary);
 	if (!ifs_ps) {
-		MessageBox(nullptr, TEXT("ピクセルシェーダーの読み込みに失敗しました\n\nshader_pixel_field.cso"), TEXT("エラー"), MB_OK);
+		MessageBox(nullptr, TEXT("ピクセルシェーダーの読み込みに失敗しました\n\nshader_pixel_2d.cso"), TEXT("エラー"), MB_OK);
 		return false;
 	}
 
@@ -132,49 +121,49 @@ bool ShaderField_Initialize(ID3D11Device* pDevice, ID3D11DeviceContext* pContext
 	delete[] psbinary_pointer; // バイナリデータのバッファを解放
 
 	if (FAILED(hr)) {
-		hal::dout << "Shader3D_Initialize() : ピクセルシェーダーの作成に失敗しました" << std::endl;
+		hal::dout << "Shader_Initialize() : ピクセルシェーダーの作成に失敗しました" << std::endl;
 		return false;
 	}
 
-
-	/*==サンプラーステイト設定はsampler.cpp/hに移した*/
-	Sampler_SetFilterAnisotropic();
+	Sampler_SetFilterPoint();
 
 	return true;
 }
 
-void Shader_field_Finalize()
+void Shader2D_Finalize()
 {
 	SAFE_RELEASE(g_pPixelShader);
 	SAFE_RELEASE(g_pVSConstantBuffer0);
+	SAFE_RELEASE(g_pVSConstantBuffer1);
 	SAFE_RELEASE(g_pInputLayout);
 	SAFE_RELEASE(g_pVertexShader);
 }
 
-void Shader_field_SetWorldMatrix(const DirectX::XMMATRIX& matrix)
+void Shader2D_SetWorldMatrix(const DirectX::XMMATRIX& matrix)
 {
 	// 定数バッファ格納用行列の構造体を定義
-	XMFLOAT4X4 mt;
+	XMFLOAT4X4 transpose;
 
 	// 行列を転置して定数バッファ格納用行列に変換
-	XMStoreFloat4x4(&mt, XMMatrixTranspose(matrix));
+	XMStoreFloat4x4(&transpose, XMMatrixTranspose(matrix));
 
 	// 定数バッファに行列をセット
-	g_pContext->UpdateSubresource(g_pVSConstantBuffer0, 0, nullptr, &mt, 0, 0);
+	g_pContext->UpdateSubresource(g_pVSConstantBuffer1, 0, nullptr, &transpose, 0, 0);
 }
-/*
-void Shader_field_SetViewMatrix(const XMMATRIX& m) {
-	XMFLOAT4X4 mt; 
-	XMStoreFloat4x4(&mt, XMMatrixTranspose(m));
-	g_pContext->UpdateSubresource(g_pVSConstantBuffer1, 0, nullptr, &mt, 0, 0);
-}
-void Shader_field_SetProjectionMatrix(const XMMATRIX& m) {
-	XMFLOAT4X4 mt; 
-	XMStoreFloat4x4(&mt, XMMatrixTranspose(m));
-	g_pContext->UpdateSubresource(g_pVSConstantBuffer2, 0, nullptr, &mt, 0, 0);
-}*/
 
-void Shader_field_Begin()
+void Shader2D_SetProjectionMatrix(const DirectX::XMMATRIX& matrix)
+{
+	// 定数バッファ格納用行列の構造体を定義
+	XMFLOAT4X4 transpose;
+
+	// 行列を転置して定数バッファ格納用行列に変換
+	XMStoreFloat4x4(&transpose, XMMatrixTranspose(matrix));
+
+	// 定数バッファに行列をセット
+	g_pContext->UpdateSubresource(g_pVSConstantBuffer0, 0, nullptr, &transpose, 0, 0);
+}
+
+void Shader2D_Begin()
 {
 	// 頂点シェーダーとピクセルシェーダーを描画パイプラインに設定
 	g_pContext->VSSetShader(g_pVertexShader, nullptr, 0);
@@ -185,9 +174,9 @@ void Shader_field_Begin()
 
 	// 定数バッファを描画パイプラインに設定
 	g_pContext->VSSetConstantBuffers(0, 1, &g_pVSConstantBuffer0);
+	g_pContext->VSSetConstantBuffers(1, 1, &g_pVSConstantBuffer1);
 
 	//サンプラーステイトを描画パイプラインに設定
 	//g_pContext->PSSetSamplers(0, 1, &g_pSamplerState);
-	// ◎ 3Dは遠景の床などに効く異方性
-	Sampler_SetFilterAnisotropic();
+	Sampler_SetFilterPoint();
 }
